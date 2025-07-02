@@ -3,7 +3,8 @@ import itertools
 from util.image_pool import ImagePool
 from .base_model import BaseModel
 from . import networks
-
+from .auxiliary_loss import SSIM , GreenSSIM , RedSSIM
+from .loss import G_MS_SSIM , MS_SSIM ,V_Loss
 
 class CycleGANModel(BaseModel):
     """
@@ -90,6 +91,13 @@ class CycleGANModel(BaseModel):
             self.criterionGAN = networks.GANLoss(opt.gan_mode).to(self.device)  # define GAN loss.
             self.criterionCycle = torch.nn.L1Loss()
             self.criterionIdt = torch.nn.L1Loss()
+            #custom loss
+            self.greenssim = GreenSSIM()
+            self.ssim = SSIM()
+            self.redssim = RedSSIM()
+            self.msssim = MS_SSIM()
+            self.gmsssim = G_MS_SSIM()
+            self.vloss = V_Loss()
             # initialize optimizers; schedulers will be automatically created by function <BaseModel.setup>.
             self.optimizer_G = torch.optim.Adam(itertools.chain(self.netG_A.parameters(), self.netG_B.parameters()), lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizer_D = torch.optim.Adam(itertools.chain(self.netD_A.parameters(), self.netD_B.parameters()), lr=opt.lr, betas=(opt.beta1, 0.999))
@@ -156,15 +164,29 @@ class CycleGANModel(BaseModel):
         # Identity loss
         if lambda_idt > 0:
             # G_A should be identity if real_B is fed: ||G_A(B) - B||
-            self.idt_A = self.netG_A(self.real_B)
-            self.loss_idt_A = self.criterionIdt(self.idt_A, self.real_B) * lambda_B * lambda_idt
+            # self.idt_A = self.netG_A(self.real_B)
+            self.idt_A = self.netG_A(self.real_A)
+            # 原版
+            # self.loss_idt_A = self.criterionIdt(self.idt_A, self.real_B) * lambda_B * lambda_idt
+            #V_LOSS
+            self.loss_idt_A = self.vloss(self.idt_A, self.real_A) * 0.05
+            #OL
+            # self.loss_idt_A = self.gmsssim(self.idt_A, self.real_A) * lambda_idt
+            
+            
             # G_B should be identity if real_A is fed: ||G_B(A) - A||
-            self.idt_B = self.netG_B(self.real_A)
-            self.loss_idt_B = self.criterionIdt(self.idt_B, self.real_A) * lambda_A * lambda_idt
+            # self.idt_B = self.netG_B(self.real_A)
+            self.idt_B = self.netG_B(self.real_B)
+            # self.loss_idt_B = (self.criterionIdt(self.idt_B, self.real_A)) * lambda_A * lambda_idt
+            #OL
+            # self.loss_idt_B = self.gmsssim(self.idt_B, self.real_B) * lambda_idt
+            #V_loss
+            self.loss_idt_B = self.vloss(self.idt_B, self.real_B) * 0.05
         else:
             self.loss_idt_A = 0
             self.loss_idt_B = 0
 
+        #grennssim loss
         # GAN loss D_A(G_A(A))
         self.loss_G_A = self.criterionGAN(self.netD_A(self.fake_B), True)
         # GAN loss D_B(G_B(B))
@@ -172,10 +194,11 @@ class CycleGANModel(BaseModel):
         # Forward cycle loss || G_B(G_A(A)) - A||
         self.loss_cycle_A = self.criterionCycle(self.rec_A, self.real_A) * lambda_A
         # Backward cycle loss || G_A(G_B(B)) - B||
-        self.loss_cycle_B = self.criterionCycle(self.rec_B, self.real_B) * lambda_B
+        self.loss_cycle_B = self.criterionCycle(self.rec_B, self.real_B) * lambda_B 
         # combined loss and calculate gradients
-        self.loss_G = self.loss_G_A + self.loss_G_B + self.loss_cycle_A + self.loss_cycle_B + self.loss_idt_A + self.loss_idt_B
+        self.loss_G = self.loss_G_A + self.loss_G_B + self.loss_cycle_A + self.loss_cycle_B + self.loss_idt_A + self.loss_idt_B  
         self.loss_G.backward()
+
 
     def optimize_parameters(self):
         """Calculate losses, gradients, and update network weights; called in every training iteration"""
@@ -186,7 +209,7 @@ class CycleGANModel(BaseModel):
         self.optimizer_G.zero_grad()  # set G_A and G_B's gradients to zero
         self.backward_G()             # calculate gradients for G_A and G_B
         self.optimizer_G.step()       # update G_A and G_B's weights
-        # D_A and D_B
+        # D_A and D_B 
         self.set_requires_grad([self.netD_A, self.netD_B], True)
         self.optimizer_D.zero_grad()   # set D_A and D_B's gradients to zero
         self.backward_D_A()      # calculate gradients for D_A
